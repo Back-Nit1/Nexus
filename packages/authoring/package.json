@@ -1,0 +1,12 @@
+{
+  "name": "@nexus/authoring",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
+    "@nexus/template": "workspace:*",
+    "@nexus/timeline": "workspace:*"
+  }
+}

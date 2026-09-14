@@ -1,0 +1,20 @@
+{
+  "name": "nexus",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "postinstall": "node scripts/fetch-ffmpeg.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dev": "pnpm -C apps/desktop dev",
+    "build": "pnpm -C apps/desktop build",
+    "e2e": "pnpm -C apps/desktop e2e",
+    "fixtures": "node --experimental-strip-types scripts/make-fixtures.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.0"
+  }
+}

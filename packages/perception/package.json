@@ -1,0 +1,8 @@
+{
+  "name": "@nexus/perception",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@nexus/renderer": "workspace:*", "@nexus/template": "workspace:*", "@nexus/timeline": "workspace:*" }
+}

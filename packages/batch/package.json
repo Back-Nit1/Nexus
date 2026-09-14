@@ -1,0 +1,14 @@
+{
+  "name": "@nexus/batch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@nexus/perception": "workspace:*",
+    "@nexus/qa": "workspace:*",
+    "@nexus/renderer": "workspace:*",
+    "@nexus/template": "workspace:*",
+    "@nexus/timeline": "workspace:*"
+  }
+}

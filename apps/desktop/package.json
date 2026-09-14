@@ -1,0 +1,33 @@
+{
+  "name": "@nexus/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "e2e": "electron-vite build && playwright test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
+    "@nexus/authoring": "workspace:*",
+    "@nexus/batch": "workspace:*",
+    "@nexus/renderer": "workspace:*",
+    "@nexus/template": "workspace:*",
+    "@nexus/timeline": "workspace:*",
+    "execa": "9.6.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "electron": "44.3.0",
+    "electron-vite": "5.0.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "vite": "^7.1.0"
+  }
+}

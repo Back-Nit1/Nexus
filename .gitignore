@@ -1,0 +1,9 @@
+node_modules/
+vendor/ffmpeg/*/
+out/
+dist/
+scratch/
+apps/desktop/e2e/screenshots/
+test-results/
+playwright-report/
+*.partial

@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "id": "promo-short",
+  "name": "Promo short",
+  "version": "1.0.0",
+  "canvas": {
+    "width": 540,
+    "height": 960,
+    "fps": {
+      "numerator": 30,
+      "denominator": 1
+    }
+  },
+  "totalFrames": 240,
+  "slots": [
+    {
+      "id": "hookClip",
+      "kind": "video",
+      "required": true
+    },
+    {
+      "id": "logo",
+      "kind": "image",
+      "required": true
+    },
+    {
+      "id": "music",
+      "kind": "audio",
+      "required": false
+    }
+  ],
+  "fields": [
+    {
+      "id": "headline",
+      "required": true
+    },
+    {
+      "id": "cta",
+      "required": true
+    },
+    {
+      "id": "slug",
+      "required": true
+    }
+  ],
+  "zones": [
+    {
+      "id": "hook",
+      "frames": 60,
+      "fill": {
+        "type": "slot",
+        "slot": "hookClip"
+      },
+      "text": [
+        {
+          "text": "{row.headline}",
+          "font": "Inter",
+          "size": {
+            "min": 28,
+            "max": 48
+          },
+          "color": "FFFFFF",
+          "position": {
+            "x": 0.5,
+            "y": 0.18
+          },
+          "width": 0.85,
+          "maxLines": 2
+        }
+      ]
+    },
+    {
+      "id": "broll",
+      "frames": 90,
+      "fill": {
+        "type": "score",
+        "maximize": "motion * sharpness"
+      },
+      "text": []
+    },
+    {
+      "id": "product",
+      "frames": 60,
+      "fill": {
+        "type": "slot",
+        "slot": "logo"
+      },
+      "text": [
+        {
+          "text": "{row.cta}",
+          "font": "Inter",
+          "size": {
+            "min": 24,
+            "max": 40
+          },
+          "color": "FFFFFF",
+          "position": {
+            "x": 0.5,
+            "y": 0.8
+          },
+          "width": 0.8,
+          "maxLines": 2
+        }
+      ]
+    },
+    {
+      "id": "end",
+      "frames": 30,
+      "fill": {
+        "type": "color",
+        "color": "111111"
+      },
+      "text": []
+    }
+  ],
+  "audio": {
+    "slot": "music"
+  },
+  "output": "{row.id}-{row.slug}.mp4"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "@nexus/renderer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts", "./ffmpeg": "./src/ffmpeg.ts" },
+  "dependencies": { "@nexus/timeline": "workspace:*", "@nexus/template": "workspace:*", "execa": "9.6.0" }
+}

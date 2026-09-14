@@ -1,0 +1,16 @@
+{
+  "ffmpegVersion": "6.0",
+  "note": "Pinned engine contract. Source tag eugeneware/ffmpeg-static b6.1.1; the darwin builds in that tag report 'ffmpeg version 6.0'. The reported string is what is recorded in render results.",
+  "binaries": {
+    "darwin-arm64": {
+      "ffmpeg": {
+        "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-arm64.gz",
+        "sha256": "a90e3db6a3fd35f6074b013f948b1aa45b31c6375489d39e572bea3f18336584"
+      },
+      "ffprobe": {
+        "url": "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffprobe-darwin-arm64.gz",
+        "sha256": "bb2db6f5d8cef919da12fbf592119a987202a8c060a886f3cab091f9cab90b64"
+      }
+    }
+  }
+}
