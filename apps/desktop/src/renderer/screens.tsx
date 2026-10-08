@@ -14,12 +14,13 @@ export const api = window.nexus;
 export const emptyMapping = (mode: Mapping["mode"]): Mapping =>
   mode === "csv" ? { mode, csv: "", mediaDir: "", idColumn: "id", fields: {}, slots: {} } : { mode, root: "", fields: {}, slots: {} };
 
-const base = (p: string) => p.split("/").pop();
+const base = (p: string) => p.split(/[\\/]+/).pop();
 const zoneFrames = (t: Template) => t.zones.reduce((s, z) => s + z.frames, 0);
+const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export const Errors = ({ errors }: { errors?: StructuredError[] }) =>
   errors?.length ? (
-    <ul className="errors">
+    <ul className="errors" role="alert">
       {errors.map((e, i) => (
         <li key={i}>
           <b>{e.code}</b> <code>{e.path || "-"}</code> {e.message}
@@ -28,8 +29,8 @@ export const Errors = ({ errors }: { errors?: StructuredError[] }) =>
     </ul>
   ) : null;
 
-const Select = ({ value, options, onChange, testid }: { value: string; options: string[]; onChange: (v: string) => void; testid?: string }) => (
-  <select data-testid={testid} value={value} onChange={(e) => onChange(e.target.value)}>
+const Select = ({ value, options, onChange, testid, label }: { value: string; options: string[]; onChange: (v: string) => void; testid?: string; label?: string }) => (
+  <select data-testid={testid} aria-label={label} value={value} onChange={(e) => onChange(e.target.value)}>
     <option value="">-</option>
     {options.map((o) => (
       <option key={o}>{o}</option>
@@ -53,6 +54,9 @@ const Panel = ({ title, actions, children }: { title: string; actions?: ReactNod
   </section>
 );
 
+/** Badge that explains why an action is blocked, for screen readers and sighted users alike. */
+const Blocked = ({ reason }: { reason?: string }) => (reason ? <span className="hint">{reason}</span> : null);
+
 // ---------------- Templates ----------------
 
 export function TemplatesScreen({ onOpen }: { onOpen: (t: Template, draft: boolean) => void }) {
@@ -60,11 +64,45 @@ export function TemplatesScreen({ onOpen }: { onOpen: (t: Template, draft: boole
   const [sel, setSel] = useState<string>();
   const [desc, setDesc] = useState("");
   const [busy, setBusy] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [draft, setDraft] = useState<Channels["author:draft"][1]>();
-  const refresh = () => api.invoke("template:list").then(setEntries);
+  const [listError, setListError] = useState<string>();
+  const refresh = async () => {
+    try {
+      setEntries(await api.invoke("template:list"));
+      setListError(undefined);
+    } catch (e) {
+      setListError(errorMessage(e));
+    }
+  };
   useEffect(() => void refresh(), []);
   const cur = entries.find((e) => e.file === sel);
   const t = cur?.template;
+
+  const doImport = async () => {
+    setImporting(true);
+    try {
+      const e = await api.invoke("template:import");
+      if (e) {
+        await refresh();
+        setSel(e.file);
+      }
+    } catch (e) {
+      setListError(errorMessage(e));
+    } finally {
+      setImporting(false);
+    }
+  };
+  const draftTemplate = async () => {
+    setBusy(true);
+    try {
+      setDraft(await api.invoke("author:draft", desc));
+    } catch (e) {
+      setDraft({ error: errorMessage(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="cols">
@@ -72,11 +110,13 @@ export function TemplatesScreen({ onOpen }: { onOpen: (t: Template, draft: boole
         title="Templates"
         actions={
           <>
-            <button onClick={async () => { const e = await api.invoke("template:import"); if (e) (await refresh(), setSel(e.file)); }}>Import</button>
+            <button disabled={importing} onClick={doImport}>{importing ? "Importing…" : "Import"}</button>
             <button onClick={refresh}>Revalidate</button>
           </>
         }
       >
+        {listError && <p className="error">{listError}</p>}
+        {entries.length === 0 && !listError && <p className="empty-note">No templates yet. Import a .nexus.json file to get started.</p>}
         <ul className="list">
           {entries.map((e) => (
             <li key={e.file} className={e.file === sel ? "on" : ""} onClick={() => setSel(e.file)}>
@@ -103,7 +143,7 @@ export function TemplatesScreen({ onOpen }: { onOpen: (t: Template, draft: boole
       <Panel title="Describe the edit">
         <textarea rows={6} value={desc} placeholder="15s vertical reel. Hook clip 2s, then 3 sharp clips…" onChange={(e) => setDesc(e.target.value)} />
         <div className="row">
-          <button disabled={!desc || busy} onClick={async () => { setBusy(true); setDraft(await api.invoke("author:draft", desc)); setBusy(false); }}>
+          <button disabled={!desc || busy} onClick={draftTemplate}>
             {busy ? "Drafting…" : "Draft template"}
           </button>
         </div>
@@ -113,8 +153,7 @@ export function TemplatesScreen({ onOpen }: { onOpen: (t: Template, draft: boole
           <>
             <div className="row">
               <span className="badge passed">validated</span>
-              <button onClick={() => onOpen(draft.template!, true)}>Preview</button>
-              <button className="primary" onClick={async () => { const e = await api.invoke("template:save", draft.template!); if (e.ok) (setDraft(undefined), await refresh(), setSel(e.file)); }}>Approve & save</button>
+              <button className="primary" onClick={() => onOpen(draft.template!, true)}>Preview draft</button>
             </div>
             <pre>{JSON.stringify(draft.template, null, 2)}</pre>
           </>
@@ -129,20 +168,25 @@ export function TemplatesScreen({ onOpen }: { onOpen: (t: Template, draft: boole
 function useInputInfo(mapping: Mapping) {
   const [info, setInfo] = useState<{ columns: string[]; files: string[]; rowIds: string[]; error?: string }>();
   const key = mapping.mode === "csv" ? `${mapping.csv}|${mapping.mediaDir}` : mapping.root;
+  const seq = useRef(0);
   useEffect(() => {
+    const mySeq = ++seq.current;
     if (key === "|" || !key) return setInfo(undefined);
-    api.invoke("input:load", mapping).then((r) => setInfo("error" in r ? { columns: [], files: [], rowIds: [], error: r.error } : r));
+    api.invoke("input:load", mapping).then(
+      (r) => mySeq === seq.current && setInfo("error" in r ? { columns: [], files: [], rowIds: [], error: r.error } : r),
+      (e) => mySeq === seq.current && setInfo({ columns: [], files: [], rowIds: [], error: errorMessage(e) }),
+    );
   }, [mapping.mode, key]);
   return info;
 }
 
-const Summary = ({ compiled }: { compiled?: Compiled }) => {
+const Summary = ({ compiled, stale }: { compiled?: Compiled; stale?: boolean }) => {
   const t = compiled?.timeline;
   return (
     <>
       {t && (
-        <div className="row">
-          <span className="badge passed">compiled</span>
+        <div className={`row${stale ? " stale" : ""}`}>
+          <span className={`badge ${stale ? "warn" : "passed"}`}>{stale ? "stale" : "compiled"}</span>
           <span>row {compiled!.rowId}</span>
           <span data-testid="total-frames">{t.totalFrames} frames</span>
           <span>{framesToTimestamp(t.totalFrames, t.canvas.fps)}</span>
@@ -156,7 +200,7 @@ const Summary = ({ compiled }: { compiled?: Compiled }) => {
   );
 };
 
-export function MapScreen({ template, mapping, setMapping, compiled, recompile, next }: { template: Template; mapping: Mapping; setMapping: (m: Mapping) => void; compiled?: Compiled; recompile: () => void; next: () => void }) {
+export function MapScreen({ template, mapping, setMapping, compiled, stale, recompile, next }: { template: Template; mapping: Mapping; setMapping: (m: Mapping) => void; compiled?: Compiled; stale?: boolean; recompile: () => void; next: () => void }) {
   const info = useInputInfo(mapping);
   const set = (patch: object) => setMapping({ ...mapping, ...patch } as Mapping);
   // Convenience: columns named exactly like a field are mapped automatically.
@@ -169,15 +213,19 @@ export function MapScreen({ template, mapping, setMapping, compiled, recompile, 
   const ready = csv ? !!(mapping.csv && mapping.mediaDir) : !!mapping.root;
   const unresolved = [...template.fields.filter((f) => f.required && !mapping.fields[f.id]).map((f) => f.id), ...template.slots.filter((s) => s.required && !mapping.slots[s.id]).map((s) => s.id)];
   const pickTo = (key: string, csvFile = false) => async () => {
-    const p = await api.invoke(csvFile ? "input:pick-csv" : "input:pick-folder");
-    if (p) set({ [key]: p });
+    try {
+      const p = await api.invoke(csvFile ? "input:pick-csv" : "input:pick-folder");
+      if (p) set({ [key]: p });
+    } catch {
+      // dialog cancelled or unavailable; nothing to apply
+    }
   };
 
   return (
     <Panel
       title="Map inputs"
       actions={
-        <div className="seg">
+        <div className="seg" role="group" aria-label="Input source">
           <button className={csv ? "on" : ""} onClick={() => setMapping(emptyMapping("csv"))}>CSV + media</button>
           <button className={!csv ? "on" : ""} onClick={() => setMapping(emptyMapping("folders"))}>Folder of subfolders</button>
         </div>
@@ -204,22 +252,22 @@ export function MapScreen({ template, mapping, setMapping, compiled, recompile, 
           <tbody>
             {mapping.mode === "csv" && (
               <>
-                <tr><th>id</th><td>column</td><td><Select value={mapping.idColumn} options={info.columns} onChange={(v) => set({ idColumn: v })} /></td></tr>
-                <tr><th>pool</th><td>column (optional)</td><td><Select value={mapping.poolColumn ?? ""} options={info.columns} onChange={(v) => set({ poolColumn: v || undefined })} /></td></tr>
+                <tr><th>id</th><td>column</td><td><Select label="id column" value={mapping.idColumn} options={info.columns} onChange={(v) => set({ idColumn: v })} /></td></tr>
+                <tr><th>pool</th><td>column (optional)</td><td><Select label="pool column" value={mapping.poolColumn ?? ""} options={info.columns} onChange={(v) => set({ poolColumn: v || undefined })} /></td></tr>
               </>
             )}
             {template.fields.map((f) => (
               <tr key={f.id}>
                 <th>{f.id}{f.required && " *"}</th>
                 <td>field</td>
-                <td><Select testid={`field-${f.id}`} value={mapping.fields[f.id] ?? ""} options={info.columns} onChange={(v) => set({ fields: { ...mapping.fields, [f.id]: v } })} /></td>
+                <td><Select testid={`field-${f.id}`} label={`${f.id} field`} value={mapping.fields[f.id] ?? ""} options={info.columns} onChange={(v) => set({ fields: { ...mapping.fields, [f.id]: v } })} /></td>
               </tr>
             ))}
             {template.slots.map((s) => (
               <tr key={s.id}>
                 <th>{s.id}{s.required && " *"}</th>
                 <td>{s.kind}</td>
-                <td><Select testid={`slot-${s.id}`} value={mapping.slots[s.id] ?? ""} options={csv ? info.columns : info.files} onChange={(v) => set({ slots: { ...mapping.slots, [s.id]: v } })} /></td>
+                <td><Select testid={`slot-${s.id}`} label={`${s.id} slot`} value={mapping.slots[s.id] ?? ""} options={csv ? info.columns : info.files} onChange={(v) => set({ slots: { ...mapping.slots, [s.id]: v } })} /></td>
               </tr>
             ))}
           </tbody>
@@ -233,16 +281,16 @@ export function MapScreen({ template, mapping, setMapping, compiled, recompile, 
       )}
       <div className="row">
         <button className="primary" disabled={!ready || unresolved.length > 0} onClick={recompile}>Preview row 1</button>
-        {compiled?.timeline && <button onClick={next}>Preview & tweak →</button>}
+        {compiled?.timeline && !stale && <button onClick={next}>Preview & tweak →</button>}
       </div>
-      <Summary compiled={compiled} />
+      <Summary compiled={compiled} stale={stale} />
     </Panel>
   );
 }
 
 // ---------------- Preview & tweak ----------------
 
-export function PreviewScreen({ template, setTemplate, mapping, setMapping, compiled, recompile }: { template: Template; setTemplate: (t: Template) => void; mapping: Mapping; setMapping: (m: Mapping) => void; compiled?: Compiled; recompile: (t?: Template, m?: Mapping) => void }) {
+export function PreviewScreen({ template, setTemplate, mapping, setMapping, compiled, stale, recompile }: { template: Template; setTemplate: (t: Template) => void; mapping: Mapping; setMapping: (m: Mapping) => void; compiled?: Compiled; stale?: boolean; recompile: (t?: Template, m?: Mapping) => void }) {
   const info = useInputInfo(mapping);
   const [url, setUrl] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -250,6 +298,7 @@ export function PreviewScreen({ template, setTemplate, mapping, setMapping, comp
   const [frame, setFrame] = useState(0);
   const video = useRef<HTMLVideoElement>(null);
   const first = useRef(true);
+  const renderSeq = useRef(0);
   const tl = compiled?.timeline;
   const fps = template.canvas.fps;
   const total = tl?.totalFrames ?? zoneFrames(template);
@@ -275,6 +324,23 @@ export function PreviewScreen({ template, setTemplate, mapping, setMapping, comp
     setFrame(f);
     if (video.current) video.current.currentTime = (f * fps.denominator) / fps.numerator;
   };
+  const renderPreview = async () => {
+    if (!tl) return;
+    const mySeq = ++renderSeq.current;
+    setBusy(true);
+    setRenderError(undefined);
+    try {
+      const r = await api.invoke("preview:render", tl);
+      if (mySeq !== renderSeq.current) return; // timeline changed/another render started meanwhile
+      setUrl(r.url);
+      setRenderError(r.error);
+    } catch (e) {
+      if (mySeq !== renderSeq.current) return;
+      setRenderError(errorMessage(e));
+    } finally {
+      if (mySeq === renderSeq.current) setBusy(false);
+    }
+  };
   const step = Math.max(1, Math.round(total / 10));
   let at = 0;
 
@@ -288,9 +354,10 @@ export function PreviewScreen({ template, setTemplate, mapping, setMapping, comp
             <div className="empty" style={{ aspectRatio: `${template.canvas.width}/${template.canvas.height}` }}>no preview</div>
           )}
           <div className="row">
-            <button className="primary" disabled={!tl || busy} onClick={async () => { setBusy(true); const r = await api.invoke("preview:render", tl!); setUrl(r.url); setRenderError(r.error); setBusy(false); }}>
+            <button className="primary" disabled={!tl || stale || busy} onClick={renderPreview}>
               {busy ? "Rendering…" : "Render preview"}
             </button>
+            <Blocked reason={stale ? "Template or inputs changed — recompiling…" : !tl ? "Compile a row before rendering" : undefined} />
             <span className="badge">frame {frame}</span>
             <span className="badge">{framesToTimestamp(frame, fps)}</span>
           </div>
@@ -326,11 +393,11 @@ export function PreviewScreen({ template, setTemplate, mapping, setMapping, comp
               ))}
             </fieldset>
           </div>
-          <Summary compiled={compiled} />
+          <Summary compiled={compiled} stale={stale} />
         </Panel>
       </div>
 
-      <div className="timeline">
+      <div className={`timeline${stale ? " stale" : ""}`}>
         <div className="labels"><div>time</div><div>zones</div><div>picture</div><div>text</div></div>
         <div className="tracks" onClick={seek}>
           <div className="track ruler">
@@ -368,47 +435,66 @@ export function PreviewScreen({ template, setTemplate, mapping, setMapping, comp
 
 // ---------------- Batch ----------------
 
-export function BatchScreen({ rows, progress, state, start }: { rows: BatchRowResult[]; progress: Record<string, { done: number; total: number }>; state: BatchState; start: (concurrency: number) => Promise<void> }) {
+export function BatchScreen({ rows, progress, state, start, canStart }: { rows: BatchRowResult[]; progress: Record<string, { done: number; total: number }>; state: BatchState; start: (concurrency: number) => Promise<void>; canStart: boolean }) {
   const [concurrency, setConcurrency] = useState(1);
   const [error, setError] = useState<string>();
+  const [starting, setStarting] = useState(false);
   useEffect(() => void api.invoke("batch:default-concurrency").then(setConcurrency), []);
   const running = state === "running" || state === "paused";
+
+  const doStart = async () => {
+    setStarting(true);
+    try {
+      await start(concurrency);
+      setError(undefined);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setStarting(false);
+    }
+  };
+  const act = (fn: () => Promise<void>) => () => fn().catch((e) => setError(errorMessage(e)));
 
   return (
     <Panel title="Batch" actions={<span data-testid="batch-state" className={`badge ${state}`}>{state}</span>}>
       <div className="row">
         <label>
           concurrency{" "}
-          <input data-testid="concurrency" type="number" min={1} value={concurrency} onChange={(e) => { const n = Math.max(1, Math.floor(Number(e.target.value)) || 1); setConcurrency(n); if (running) api.invoke("batch:concurrency", n); }} />
+          <input data-testid="concurrency" type="number" min={1} value={concurrency} onChange={(e) => { const n = Math.max(1, Math.floor(Number(e.target.value)) || 1); setConcurrency(n); if (running) act(() => api.invoke("batch:concurrency", n))(); }} />
         </label>
-        <button className="primary" disabled={running} onClick={() => start(concurrency).then(() => setError(undefined), (e) => setError(String(e)))}>Start</button>
-        <button disabled={state !== "running"} onClick={() => api.invoke("batch:pause")}>Pause</button>
-        <button disabled={state !== "paused"} onClick={() => api.invoke("batch:resume")}>Resume</button>
-        <button disabled={!running} onClick={() => api.invoke("batch:cancel")}>Cancel</button>
+        <button className="primary" disabled={running || !canStart || starting} onClick={doStart}>{starting ? "Starting…" : "Start"}</button>
+        <Blocked reason={!running && !canStart ? "Compile a row in Preview & tweak before starting a batch" : undefined} />
+        <button disabled={state !== "running"} onClick={act(() => api.invoke("batch:pause"))}>Pause</button>
+        <button disabled={state !== "paused"} onClick={act(() => api.invoke("batch:resume"))}>Resume</button>
+        <button disabled={!running} onClick={act(() => api.invoke("batch:cancel"))}>Cancel</button>
       </div>
       {error && <p className="error">{error}</p>}
-      <table className="grid">
-        <thead><tr><th /><th>row</th><th>status</th><th>progress</th><th>QA</th><th /></tr></thead>
-        <tbody>
-          {rows.map((r) => {
-            const p = progress[r.rowId];
-            const done = r.status === "passed" || r.status === "failed";
-            return (
-              <tr key={r.rowId} data-testid={`row-${r.rowId}`}>
-                <td>{r.thumbnail ? <img className="thumb" src={mediaUrl(r.thumbnail)} /> : <div className="thumb" />}</td>
-                <td>{r.rowId}</td>
-                <td>
-                  <span className={`badge ${r.status}`}>{r.status}</span>
-                  {r.error && <div className="error small">{r.error.code}: {r.error.message}</div>}
-                </td>
-                <td><progress max={1} value={done ? 1 : p ? p.done / p.total : 0} /></td>
-                <td>{r.qa && <span className={`badge ${r.qa.passed ? "passed" : "failed"}`} title={r.qa.checks.filter((c) => !c.passed).map((c) => c.name).join(", ")}>{r.qa.passed ? "QA pass" : "QA fail"}</span>}</td>
-                <td>{r.output && <button onClick={() => api.invoke("file:open", r.output!)}>Open</button>}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      {rows.length === 0 ? (
+        <p className="empty-note">No rows queued yet. Starting the batch will queue every valid input row.</p>
+      ) : (
+        <table className="grid">
+          <thead><tr><th /><th>row</th><th>status</th><th>progress</th><th>QA</th><th /></tr></thead>
+          <tbody>
+            {rows.map((r) => {
+              const p = progress[r.rowId];
+              const done = r.status === "passed" || r.status === "failed";
+              return (
+                <tr key={r.rowId} data-testid={`row-${r.rowId}`}>
+                  <td>{r.thumbnail ? <img className="thumb" src={mediaUrl(r.thumbnail)} alt="" /> : <div className="thumb" />}</td>
+                  <td>{r.rowId}</td>
+                  <td>
+                    <span className={`badge ${r.status}`}>{r.status}</span>
+                    {r.error && <div className="error small">{r.error.code}: {r.error.message}</div>}
+                  </td>
+                  <td><progress max={1} value={done ? 1 : p ? p.done / p.total : 0} /></td>
+                  <td>{r.qa && <span className={`badge ${r.qa.passed ? "passed" : "failed"}`} title={r.qa.checks.filter((c) => !c.passed).map((c) => c.name).join(", ")}>{r.qa.passed ? "QA pass" : "QA fail"}</span>}</td>
+                  <td>{r.output && <button onClick={act(() => api.invoke("file:open", r.output!))}>Open</button>}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
     </Panel>
   );
 }
