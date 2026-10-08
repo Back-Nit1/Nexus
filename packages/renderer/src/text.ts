@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createReadStream, existsSync } from "node:fs";
+import { lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,10 +47,22 @@ export async function preflightFont(family: Font, dir = FONTS_DIR): Promise<stri
 
 export const sha256 = (s: string | Buffer) => createHash("sha256").update(s).digest("hex");
 
+/** Same algorithm as @nexus/perception's hashFile: sha256 of the file's current bytes. */
+export async function hashFileContent(path: string): Promise<string> {
+  const h = createHash("sha256");
+  for await (const chunk of createReadStream(path)) h.update(chunk);
+  return h.digest("hex");
+}
+
 /** Job directory with a `fonts` link so filter graphs only ever reference short relative paths. */
 export async function prepareJobDir(dir: string) {
   await mkdir(dir, { recursive: true });
-  if (!existsSync(join(dir, "fonts"))) await symlink(FONTS_DIR, join(dir, "fonts"), "dir");
+  const link = join(dir, "fonts");
+  // A job dir can be reused across engine versions/runs; a link left pointing at a stale FONTS_DIR
+  // (moved install, different NEXUS_FONTS_DIR) would silently serve the wrong fonts. Verify the target.
+  const stale = existsSync(link) && (await lstat(link)).isSymbolicLink() ? (await readlink(link)) !== FONTS_DIR : existsSync(link);
+  if (stale) await rm(link, { recursive: true, force: true });
+  if (!existsSync(link)) await symlink(FONTS_DIR, link, "dir");
 }
 
 /** Writes text to a content-addressed file in the job dir (avoids filtergraph text escaping). */
@@ -92,6 +104,9 @@ async function layout(req: TextRequest, size: number): Promise<Attempt> {
   const paragraphs = req.text.split("\n").map((p) => p.trim().split(/\s+/).filter(Boolean));
   // ponytail: measures all O(words²) contiguous spans per size in one ffmpeg call; fine for headlines, cap spans if long copy appears.
   const spans = [...new Set(paragraphs.flatMap((ws) => ws.flatMap((_, i) => ws.slice(i).map((__, k) => ws.slice(i, i + k + 1).join(" ")))))];
+  // Whitespace-only (or empty) text has no words to measure. An n=0 concat filter is an invalid ffmpeg
+  // invocation, so short-circuit to the empty-lines attempt instead of calling measureTexts.
+  if (spans.length === 0) return { lines: [] };
   const widths = new Map((await measureTexts(spans, req.font, size)).map((w, i) => [spans[i], w]));
   const lines: TextFit["lines"] = [];
   for (const ws of paragraphs) {
