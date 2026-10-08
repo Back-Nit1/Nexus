@@ -103,6 +103,12 @@ importers:
         specifier: workspace:*
         version: link:../timeline
 
+  packages/integration-contracts:
+    dependencies:
+      zod:
+        specifier: 3.25.76
+        version: 3.25.76
+
   packages/perception:
     dependencies:
       '@nexus/renderer':
