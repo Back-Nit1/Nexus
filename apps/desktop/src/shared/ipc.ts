@@ -29,9 +29,9 @@ export type Channels = {
 };
 
 export type Events = {
-  "batch:row": BatchRowResult;
-  "batch:progress": { rowId: string; done: number; total: number };
-  "batch:state": BatchState;
+  "batch:row": { batchId: string; row: BatchRowResult };
+  "batch:progress": { batchId: string; rowId: string; done: number; total: number };
+  "batch:state": { batchId: string; state: BatchState };
 };
 
 // Record<keyof ...> makes these allowlists exhaustive at compile time.
@@ -50,5 +50,12 @@ export type Api = {
   on<K extends keyof Events>(event: K, cb: (data: Events[K]) => void): () => void;
 };
 
-/** URL for a file under userData, served by main's nexus-media protocol. */
-export const mediaUrl = (file: string) => `nexus-media://local${file.split("/").map(encodeURIComponent).join("/")}`;
+/**
+ * URL for a file under userData, served by main's nexus-media protocol.
+ * Normalizes `\` to `/` so Windows paths split into segments the same way POSIX ones do.
+ * Note: a URL path always starts with `/`, so a Windows drive-absolute path (`C:\...`) still
+ * decodes on the main side as `/C:/...`, which `path.win32.resolve` does not treat as the
+ * original absolute path. Fixing that fully requires stripping the leading slash before a
+ * drive letter in main's protocol handler, which is outside this change's owned files.
+ */
+export const mediaUrl = (file: string) => `nexus-media://local${file.replace(/\\/g, "/").split("/").map(encodeURIComponent).join("/")}`;

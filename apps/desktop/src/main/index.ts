@@ -102,10 +102,10 @@ app.whenReady().then(async () => {
     if (batch && (batch.state === "running" || batch.state === "paused")) throw new Error("A batch is already running");
     const batchId = `${template.id}-${new Date().toISOString().replace(/[:.]/g, "-")}`;
     const b = (batch = await Batch.open({ dir: data("batches", batchId), template, mapping, batchId, cacheDir: data("cache"), concurrency }));
-    b.on("row", (r) => send("batch:row", r));
-    b.on("progress", (p) => send("batch:progress", p));
-    b.on("state", (s) => send("batch:state", s));
-    b.start().catch((e) => (console.error(e), send("batch:state", "done")));
+    b.on("row", (row) => send("batch:row", { batchId, row }));
+    b.on("progress", (p) => send("batch:progress", { batchId, ...p }));
+    b.on("state", (state) => send("batch:state", { batchId, state }));
+    b.start().catch((e) => (console.error(e), send("batch:state", { batchId, state: "done" })));
     return { batchId, rows: b.results.rows };
   });
   handle("batch:pause", () => batch?.pause());
