@@ -7,3 +7,4 @@ apps/desktop/e2e/screenshots/
 test-results/
 playwright-report/
 *.partial
+.claude/worktrees/
