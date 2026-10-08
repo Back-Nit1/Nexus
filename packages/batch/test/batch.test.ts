@@ -1,11 +1,11 @@
 import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { render } from "@nexus/renderer";
 import type { Template } from "@nexus/template";
-import { Batch, defaultConcurrency, loadRows, parseCsv, type Mapping } from "../src/index.ts";
+import { Batch, defaultConcurrency, loadRows, parseCsv, Preparer, safeJoin, type Mapping } from "../src/index.ts";
 import { bandClip } from "../../renderer/test/synth.ts";
 
 const template: Template = {
@@ -60,6 +60,52 @@ describe("inputs", () => {
     expect(rows).toEqual([{ id: "product-001", fields: { headline: "Folder row" }, slots: { hookClip: join(f, "product-001", "clip1.mp4") }, pool: [join(f, "product-001", "clip2.mp4")] }]);
   });
   it("defaults concurrency to half the logical CPUs, min 1", () => expect(defaultConcurrency()).toBeGreaterThanOrEqual(1));
+
+  it("strips a UTF-8 BOM before parsing", () => expect(parseCsv("﻿a,b\n1,2\n")).toEqual([["a", "b"], ["1", "2"]]));
+
+  it("rejects a blank or duplicate CSV header", async () => {
+    const dir = join(root, "csv-header");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "blank.csv"), "id,,slug\nr1,x,one\n");
+    await writeFile(join(dir, "dup.csv"), "id,slug,slug\nr1,one,two\n");
+    const mediaDir = join(root, "media dir");
+    await expect(loadRows({ mode: "csv", csv: join(dir, "blank.csv"), mediaDir, idColumn: "id", fields: {}, slots: {} })).rejects.toThrow(/blank/);
+    await expect(loadRows({ mode: "csv", csv: join(dir, "dup.csv"), mediaDir, idColumn: "id", fields: {}, slots: {} })).rejects.toThrow(/duplicate/);
+  });
+
+  it("rejects CSV rows with the wrong number of columns", async () => {
+    const dir = join(root, "csv-width");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "rows.csv"), "id,slug\nr1,one,extra\n");
+    await expect(loadRows({ mode: "csv", csv: join(dir, "rows.csv"), mediaDir: join(root, "media dir"), idColumn: "id", fields: {}, slots: {} })).rejects.toThrow(/columns/);
+  });
+
+  it("confines slot/pool paths to the media directory (no traversal)", () => {
+    const media = join(root, "media dir");
+    expect(safeJoin(media, "clip1.mp4")).toBe(join(media, "clip1.mp4"));
+    expect(() => safeJoin(media, "../../etc/passwd")).toThrow(RangeError);
+    expect(() => safeJoin(media, "/etc/passwd")).toThrow(RangeError);
+  });
+
+  it("isolates a row whose mapped file escapes the media directory instead of throwing for the whole batch", async () => {
+    const dir = join(root, "csv-traversal");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "rows.csv"), "id,slug,hook\nr1,ok,clip1.mp4\nr2,bad,../../evil.mp4\n");
+    const { rows } = await loadRows({ mode: "csv", csv: join(dir, "rows.csv"), mediaDir: join(root, "media dir"), idColumn: "id", fields: { slug: "slug" }, slots: { hookClip: "hook" } });
+    expect(rows.find((r) => r.id === "r1")?.error).toBeUndefined();
+    expect(rows.find((r) => r.id === "r2")?.error).toMatchObject({ code: "UNSAFE_PATH" });
+  });
+
+  it("invalidates the media cache when a file's content changes without the path changing", async () => {
+    const p = join(root, "mutable.bin");
+    await writeFile(p, "version-1");
+    const prep = new Preparer();
+    const h1 = await prep.hash(p);
+    await new Promise((r) => setTimeout(r, 5)); // ensure mtime advances on coarse filesystem clocks
+    await writeFile(p, "version-2-longer-content");
+    const h2 = await prep.hash(p);
+    expect(h1).not.toBe(h2);
+  });
 });
 
 describe("batch", () => {
@@ -126,5 +172,83 @@ describe("batch", () => {
     c.on("row", (r) => r.status === "rendering" && c.cancel());
     const res = await c.start();
     expect(res.rows.filter((r) => r.status === "cancelled").map((r) => r.rowId)).toEqual(["r1", "r2"]);
+  });
+
+  it("rejects unsafe and duplicate row ids before they ever reach a filesystem path", async () => {
+    const dir = join(root, "unsafe-ids");
+    const media = join(root, "media dir");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "rows.csv"), "id,slug,hook\n../escape,one,clip1.mp4\ngood,two,clip2.mp4\ngood,three,clip1.mp4\n");
+    const m: Mapping = { mode: "csv", csv: join(dir, "rows.csv"), mediaDir: media, idColumn: "id", fields: { slug: "slug" }, slots: { hookClip: "hook" } };
+    const b = await Batch.open({ dir: join(root, "unsafe-ids-run"), template, mapping: m, batchId: "u", cacheDir: join(root, "cache"), concurrency: 2 });
+    const good = b.results.rows.filter((r) => r.rowId === "good");
+    expect(b.results.rows.find((r) => r.rowId === "../escape")).toMatchObject({ status: "invalid", error: { code: "UNSAFE_ROW_ID" } });
+    expect(good).toHaveLength(2);
+    expect(good[0]).toMatchObject({ status: "pending" }); // first "good" row kept
+    expect(good[1]).toMatchObject({ status: "invalid", error: { code: "DUPLICATE_ROW_ID" } });
+    // never created a directory/file outside the batch dir from the unsafe id
+    expect(existsSync(join(root, "escape"))).toBe(false);
+  });
+
+  it("clamps concurrency to a finite positive integer (no NaN hang, no unbounded Infinity)", async () => {
+    const b = await open("conc-nan", { concurrency: NaN });
+    expect(b.concurrency).toBe(1);
+    b.setConcurrency(Infinity);
+    expect(b.concurrency).toBe(1);
+    b.setConcurrency(3.7);
+    expect(b.concurrency).toBe(3);
+  });
+
+  it("recovers from a corrupt results.json instead of crashing open()", async () => {
+    const dir = join(root, "corrupt");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "results.json"), "{not valid json");
+    const b = await open("corrupt");
+    expect(b.results.rows.every((r) => r.status === "pending" || r.status === "invalid")).toBe(true);
+    expect(readdirSync(dir).some((f) => f.startsWith("results.json.corrupt-"))).toBe(true);
+  });
+
+  it("invalidates cached timelines when the template, engine or mapping changes (resume compatibility)", async () => {
+    const dir = "resume-compat";
+    const first = await open(dir);
+    await first.start();
+    const file = join(root, dir, "results.json");
+    const before = JSON.parse(await readFile(file, "utf8"));
+    expect(before.rows.find((r: any) => r.rowId === "r1")).toMatchObject({ status: "passed" });
+
+    const changedTemplate = { ...template, version: "2.0.0" };
+    const reopened = await Batch.open({ dir: join(root, dir), template: changedTemplate, mapping, batchId: dir, cacheDir: join(root, "cache"), concurrency: 2 });
+    expect(reopened.results.templateVersion).toBe("2.0.0");
+    const r1 = reopened.results.rows.find((r) => r.rowId === "r1")!;
+    expect(r1.status).toBe("pending");
+    expect(r1.timeline).toBeUndefined();
+  });
+
+  it("recompiles a row when its input media changes on disk between runs", async () => {
+    const dir = "resume-media";
+    const b1 = await open(dir);
+    await b1.start();
+    const clip1 = join(root, "media dir", "clip1.mp4");
+    const original = await readFile(clip1);
+    try {
+      await bandClip(join(root, "media dir"), "clip1.mp4", 9, 60); // overwrite with different content
+      const b2 = await open(dir);
+      const r1 = b2.results.rows.find((r) => r.rowId === "r1")!;
+      expect(r1).toMatchObject({ status: "pending", timeline: undefined });
+    } finally {
+      await writeFile(clip1, original); // restore for any later test relying on the original fixture
+    }
+  });
+
+  it("treats case- and Unicode-normalization-equivalent output names as collisions", async () => {
+    const dir = join(root, "case-fold");
+    const media = join(root, "media dir");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "rows.csv"), "id,slug,hook\na,Same,clip1.mp4\nb,SAME,clip2.mp4\n");
+    const m: Mapping = { mode: "csv", csv: join(dir, "rows.csv"), mediaDir: media, idColumn: "id", fields: { headline: "slug", slug: "slug" }, slots: { hookClip: "hook" } };
+    const t: Template = { ...template, output: "{row.slug}.mp4" };
+    const b = await Batch.open({ dir: join(root, "case-fold-run"), template: t, mapping: m, batchId: "c", cacheDir: join(root, "cache"), concurrency: 2 });
+    const res = await b.start();
+    expect(res.rows.every((r) => r.status === "invalid" && r.error?.code === "OUTPUT_NAME_COLLISION")).toBe(true);
   });
 });

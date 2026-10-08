@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { basename, join, resolve, sep } from "node:path";
 import { analyze, hashFile, type Analysis } from "@nexus/perception";
 import { fitText } from "@nexus/renderer";
 import { compile, textRequests, type Media, type Prepared, type Result, type RowInput, type Template } from "@nexus/template";
@@ -11,11 +11,23 @@ export type Mapping =
   | { mode: "csv"; csv: string; mediaDir: string; idColumn: string; fields: Record<string, string>; slots: Record<string, string>; poolColumn?: string }
   | { mode: "folders"; root: string; fields: Record<string, string>; slots: Record<string, string> };
 
-/** A row before perception: bound values and absolute media paths. */
-export type RawRow = { id: string; fields: Record<string, string>; slots: Record<string, string>; pool: string[] };
+/** A row before perception: bound values and absolute media paths. `error` short-circuits compileRow for rows that failed to load safely (e.g. unsafe path). */
+export type RawRow = { id: string; fields: Record<string, string>; slots: Record<string, string>; pool: string[]; error?: StructuredError };
 
-/** RFC 4180 CSV (quoted fields, "" escapes, CRLF). */
+/** Filesystem-safe row id: used verbatim as a directory/file name segment (jobs/<id>, thumbs/<id>.png, outputs). */
+export const SAFE_ROW_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+/** Joins `base` with a user/data-supplied relative filename, rejecting anything that escapes `base` (traversal, absolute paths). */
+export function safeJoin(base: string, file: string): string {
+  const resolvedBase = resolve(base);
+  const resolved = resolve(resolvedBase, file);
+  if (resolved !== resolvedBase && !resolved.startsWith(resolvedBase + sep)) throw new RangeError(`Path '${file}' escapes '${base}'`);
+  return resolved;
+}
+
+/** RFC 4180 CSV (quoted fields, "" escapes, CRLF, optional UTF-8 BOM). */
 export function parseCsv(text: string): string[][] {
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   const rows: string[][] = [[]];
   let cell = "", quoted = false;
   for (let i = 0; i < text.length; i++) {
@@ -35,6 +47,18 @@ export function parseCsv(text: string): string[][] {
   return rows.filter((r) => r.some((c) => c !== ""));
 }
 
+/** Validates a CSV header/body shape: no blank or duplicate header names, every row has the same column count as the header. */
+function checkCsvShape(header: string[], body: string[][]) {
+  if (!header.length) throw new Error("CSV has no header row");
+  const blank = header.findIndex((h) => !h.trim());
+  if (blank !== -1) throw new Error(`CSV header has a blank column name at index ${blank}`);
+  const seen = new Set<string>();
+  for (const h of header) if (seen.has(h)) throw new Error(`CSV header has duplicate column '${h}'`); else seen.add(h);
+  body.forEach((cells, i) => {
+    if (cells.length !== header.length) throw new Error(`CSV row ${i + 2} has ${cells.length} columns, header has ${header.length}`);
+  });
+}
+
 const files = async (dir: string) => (await readdir(dir, { withFileTypes: true })).filter((e) => e.isFile() && !e.name.startsWith(".")).map((e) => e.name).sort();
 
 /** Column names (csv header, or keys of row.json files) so the UI can offer mappings. */
@@ -42,13 +66,21 @@ export async function loadRows(m: Mapping): Promise<{ columns: string[]; files: 
   const pick = (src: Record<string, string>, map: Record<string, string>) => Object.fromEntries(Object.entries(map).map(([k, col]) => [k, src[col] ?? ""]));
   if (m.mode === "csv") {
     const [header = [], ...body] = parseCsv(await readFile(m.csv, "utf8"));
+    checkCsvShape(header, body);
     const media = await files(m.mediaDir);
-    const rows = body.map((cells, i) => {
+    const rows = body.map((cells, i): RawRow => {
       const rec = Object.fromEntries(header.map((h, k) => [h, cells[k] ?? ""]));
-      const slots = Object.fromEntries(Object.entries(pick(rec, m.slots)).filter(([, f]) => f).map(([k, f]) => [k, join(m.mediaDir, f)]));
-      const used = new Set(Object.values(slots));
-      const pool = m.poolColumn ? rec[m.poolColumn].split(";").map((f) => f.trim()).filter(Boolean).map((f) => join(m.mediaDir, f)) : media.map((f) => join(m.mediaDir, f)).filter((f) => !used.has(f));
-      return { id: rec[m.idColumn] || `row-${i + 1}`, fields: pick(rec, m.fields), slots, pool };
+      const rowId = rec[m.idColumn] || `row-${i + 1}`;
+      try {
+        const slots = Object.fromEntries(Object.entries(pick(rec, m.slots)).filter(([, f]) => f).map(([k, f]) => [k, safeJoin(m.mediaDir, f)]));
+        const used = new Set(Object.values(slots));
+        const pool = m.poolColumn
+          ? rec[m.poolColumn].split(";").map((f) => f.trim()).filter(Boolean).map((f) => safeJoin(m.mediaDir, f))
+          : media.map((f) => join(m.mediaDir, f)).filter((f) => !used.has(f));
+        return { id: rowId, fields: pick(rec, m.fields), slots, pool };
+      } catch (e) {
+        return { id: rowId, fields: pick(rec, m.fields), slots: {}, pool: [], error: { code: "UNSAFE_PATH", path: "", message: (e as Error).message } };
+      }
     });
     return { columns: header, files: media, rows };
   }
@@ -71,13 +103,24 @@ export async function loadRows(m: Mapping): Promise<{ columns: string[]; files: 
 
 export type CompiledRow = { inputHashes: Record<string, string>; timeline?: Timeline; errors?: StructuredError[] };
 
-/** Per-process caches: path -> hash (keyed with mtime/size by caller-free simplicity: path only), hash+fps -> analysis. */
+type HashEntry = { mtimeMs: number; size: number; hash: string };
+
+/** Per-process caches: path -> (mtime, size, hash) so a file that changes on disk between reads gets rehashed, and hash+fps -> analysis. */
 export class Preparer {
-  private hashes = new Map<string, Promise<string>>();
+  private hashes = new Map<string, Promise<HashEntry>>();
   private analyses = new Map<string, Promise<Analysis>>();
 
+  /** Content hash of `path`, invalidated automatically when its mtime or size changes. */
+  async hash(path: string): Promise<string> {
+    const st = await stat(path);
+    const cached = await this.hashes.get(path);
+    if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached.hash;
+    const entry = this.hashes.set(path, hashFile(path).then((hash) => ({ mtimeMs: st.mtimeMs, size: st.size, hash }))).get(path)!;
+    return (await entry).hash;
+  }
+
   async media(path: string, t: Template): Promise<Media & { analysis: Analysis }> {
-    const hash = await (this.hashes.get(path) ?? this.hashes.set(path, hashFile(path)).get(path)!);
+    const hash = await this.hash(path);
     const key = `${hash}@${t.canvas.fps.numerator}/${t.canvas.fps.denominator}`;
     const analysis = await (this.analyses.get(key) ?? this.analyses.set(key, analyze(path, t.canvas.fps)).get(key)!);
     return { id: basename(path), path, hash, kind: analysis.kind, frames: analysis.frames, analysis };
@@ -85,6 +128,7 @@ export class Preparer {
 
   /** The one compile path, shared by preview and batch: validate inputs -> perception -> text fit -> compile. */
   async compileRow(t: Template, raw: RawRow): Promise<CompiledRow> {
+    if (raw.error) return { inputHashes: {}, errors: [raw.error] };
     const errors: StructuredError[] = [];
     const inputHashes: Record<string, string> = {};
     const load = async (path: string, at: string) => {

@@ -47,6 +47,10 @@ describe("scoring expressions", () => {
   it.each(["", "motion *", "2 * motion", "motion ** sharpness", "Math.random()", "motion; sharpness", "contrast", "(motion", "motion)", "-motion", "motion sharpness"])("rejects %j", (src) =>
     expect(() => parseExpression(src)).toThrow(),
   );
+  it("rejects deeply nested parentheses with a structured error instead of overflowing the stack", () => {
+    const deep = "(".repeat(10_000) + "motion" + ")".repeat(10_000);
+    expect(() => parseExpression(deep)).toThrow(/nested too deeply/);
+  });
 });
 
 describe("validator", () => {

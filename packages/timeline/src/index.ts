@@ -4,8 +4,14 @@ import { z } from "zod";
 
 export type Rational = { numerator: number; denominator: number };
 
+const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+
 /** floor((2a + b) / 2b) for a >= 0, b > 0: round-half-up of a/b in exact integer arithmetic. */
-const roundHalfUp = (a: bigint, b: bigint) => (2n * a + b) / (2n * b);
+const roundHalfUp = (a: bigint, b: bigint) => {
+  const r = (2n * a + b) / (2n * b);
+  if (r > MAX_SAFE || r < -MAX_SAFE) throw new RangeError(`Frame value ${r} exceeds Number.MAX_SAFE_INTEGER`);
+  return r;
+};
 
 /** Parse a non-negative decimal ("2.05", 2.05, "1e-3") into an exact fraction. Numbers use their shortest repr. */
 function decimal(value: string | number): [bigint, bigint] {

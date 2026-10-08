@@ -53,6 +53,10 @@ describe("quantization (round-half-up, exact)", () => {
     expect(() => secondsToFrames("-1", f30)).toThrow();
     expect(() => secondsToFrames("abc", f30)).toThrow();
   });
+  it("rejects frame counts beyond Number.MAX_SAFE_INTEGER instead of silently truncating", () => {
+    expect(() => secondsToFrames("1" + "0".repeat(17), f30)).toThrow(RangeError);
+    expect(() => framesToSamples(Number.MAX_SAFE_INTEGER, f30, 48000)).toThrow(RangeError);
+  });
   it("formats timestamps and samples", () => {
     expect(framesToTimestamp(30000, ntsc)).toBe("00:16:41.000");
     expect(framesToTimestamp(1, ntsc)).toBe("00:00:00.033");
