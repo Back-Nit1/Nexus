@@ -13,9 +13,12 @@ export class ExpressionError extends Error {
   }
 }
 
+const MAX_PAREN_DEPTH = 100;
+
 export function parseExpression(src: string): Expr {
   const tokens = [...src.matchAll(/\s*(?:([A-Za-z_]\w*)|([-+*/()])|(\S))/gy)].map((m) => ({ text: (m[1] ?? m[2] ?? m[3])!, at: m.index! + m[0].length - (m[1] ?? m[2] ?? m[3])!.length, ident: !!m[1], bad: !!m[3] }));
   let i = 0;
+  let depth = 0;
   const peek = () => tokens[i];
   const fail = (msg: string): never => {
     throw new ExpressionError(msg, peek()?.at ?? src.length);
@@ -23,10 +26,12 @@ export function parseExpression(src: string): Expr {
   const factor = (): Expr => {
     const t = peek() ?? fail("Unexpected end of expression");
     if (t.text === "(") {
+      if (++depth > MAX_PAREN_DEPTH) fail(`Expression nested too deeply (max ${MAX_PAREN_DEPTH} levels of parentheses)`);
       i++;
       const e = sum();
       if (peek()?.text !== ")") fail("Expected ')'");
       i++;
+      depth--;
       return e;
     }
     if (t.ident && (VARIABLES as readonly string[]).includes(t.text)) return i++, { v: t.text as keyof Scores };
